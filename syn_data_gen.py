@@ -153,10 +153,11 @@ def gen_coupon_rates(
 def gen_arrivals(
     M: int = 50,
     mode: str = "uniform",     # "uniform", "poly", or "exp"
-    alpha: float = 0.5,        # decay rate
+    alpha: float = 2.0,        # decay rate (0, 1, 2, 3 in paper plots)
     n_episodes: int = 10       # highest round index k (starts at 2)
 ) -> List[List[int]]:
     """
+    # TODO: what exactly is quadratic decay?
     Draw 2**(k-1) i.i.d. samples from {0, …, M-1} for each round k = 2 … n_episodes.
 
     Returns
