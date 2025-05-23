@@ -1,6 +1,7 @@
 plotly
 pandas
 scikit-learn
+scipy
 statsmodels
 numpy
 seaborn
