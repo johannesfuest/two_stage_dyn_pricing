@@ -1,0 +1,6 @@
+mode: synthetic # synthetic, real
+k: 5, # number of episode (starting from 2)
+W: 2 # ball norm of projection (unclear from paper)
+delta_max: 2.0 # max delta
+alpha: 2.0 # alpha for the decay
+theta_init: zero # zero or sample
