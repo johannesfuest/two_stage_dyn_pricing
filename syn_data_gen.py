@@ -2,7 +2,6 @@ import statsmodels.api as sm
 import numpy as np
 import math
 import random
-import torch
 from scipy.stats import uniform_direction, truncnorm
 from typing import List, Union
 
@@ -10,9 +9,32 @@ from typing import List, Union
 random.seed(42)
 np.random.seed(42)
 
-_TensorLike = Union[float, torch.Tensor]
-_SQRT2   = math.sqrt(2.0)
-_INV_SQRT2PI = 1.0 / math.sqrt(2.0 * math.pi)
+
+def sample_w_sphere(d: int, W: float, n_samples: int = 1,
+                    rng: np.random.Generator | None = None) -> np.ndarray:
+    """
+    Sample points uniformly from the surface of a d-dimensional sphere.
+    Parameters
+    ----------
+    d : int
+        Dimension of the sphere.
+    W : float
+        Radius of the sphere.
+    n_samples : int, default 1
+        Number of samples to draw.
+    rng : np.random.Generator, optional
+        Random number generator to use. If None, a default RNG is used.
+    Returns
+    -------
+    np.ndarray
+        An array of shape (n_samples, d) containing the sampled points.
+    """
+    if rng is None:
+        rng = np.random.default_rng()
+    z = rng.standard_normal(size=(n_samples, d))
+    z /= np.linalg.norm(z, axis=1, keepdims=True)
+    z = z.reshape((d, n_samples))  # reshape to (d, n_samples)
+    return W * z
 
 
 def gen_noise(
@@ -21,7 +43,7 @@ def gen_noise(
     sigma_noise: float = 0.05,
     a_noise: float = 0.02,
     b_noise: float = 0.11,
-) -> np.ndarray:
+) -> List[float]:
     """
     Generate truncated-normal noise for the synthetic time-series data.
 
@@ -40,8 +62,8 @@ def gen_noise(
 
     Returns
     -------
-    np.ndarray
-        One-dimensional array of length containing the noise.
+    List[float]
+        A list of noise values sampled from the truncated normal distribution.
     """
     if n_episodes < 2:
         raise ValueError("n_episodes must be at least 2.")
@@ -62,7 +84,7 @@ def gen_noise(
         size=total_samples,
         random_state=None,  # add a seed here if you need reproducibility
     )
-    return noise
+    return list(noise)
 
 
 def noise_pdf(
@@ -131,82 +153,6 @@ def noise_cdf(
     return truncnorm(a_std, b_std, loc=mu_noise, scale=sigma_noise).cdf(x)
 
 
-def _phi(z: torch.Tensor) -> torch.Tensor:
-    """Standard–normal pdf  φ(z) = exp(-z²/2)/√(2π)."""
-    return torch.exp(-0.5 * z * z) * _INV_SQRT2PI
-
-
-def _Phi(z: torch.Tensor) -> torch.Tensor:
-    """Standard–normal cdf  Φ(z)  (via erf, which is autograd-friendly)."""
-    return 0.5 * (1.0 + torch.erf(z / _SQRT2))
-
-
-def noise_pdf_torch(
-    x: _TensorLike,
-    mu: _TensorLike,
-    sigma: _TensorLike,
-    a: _TensorLike,
-    b: _TensorLike,
-) -> torch.Tensor:
-    """
-    PDF of N(mu, sigma²) truncated to [a, b].
-
-    Returned tensor broadcasts over all inputs.
-    """
-    # promote to tensors on same dtype/device
-    x, mu, sigma, a, b = map(
-        lambda t: torch.as_tensor(t, dtype=torch.float64, device='cpu'),
-        (x, mu, sigma, a, b),
-    )
-
-    if (sigma <= 0).any():
-        raise ValueError("sigma must be positive.")
-
-    # standardised variables
-    z      = (x - mu) / sigma
-    alpha  = (a - mu) / sigma
-    beta   = (b - mu) / sigma
-    Z      = _Phi(beta) - _Phi(alpha)        # normalising constant
-
-    # core pdf
-    base   = _phi(z) / (sigma * Z)
-    # zero outside the support (keeps autograd, avoids NaNs)
-    return torch.where((x < a) | (x > b), torch.zeros_like(base), base)
-
-
-def noise_cdf_torch(
-    x: _TensorLike,
-    mu: _TensorLike,
-    sigma: _TensorLike,
-    a: _TensorLike,
-    b: _TensorLike,
-) -> torch.Tensor:
-    """
-    CDF of N(mu, sigma²) truncated to [a, b].
-
-    Values below a → 0, above b → 1.
-    """
-    x, mu, sigma, a, b = map(
-        lambda t: torch.as_tensor(t, dtype=torch.float64, device='cpu'),
-        (x, mu, sigma, a, b),
-    )
-
-    if (sigma <= 0).any():
-        raise ValueError("sigma must be positive.")
-
-    z      = (x - mu) / sigma
-    alpha  = (a - mu) / sigma
-    beta   = (b - mu) / sigma
-    Z      = _Phi(beta) - _Phi(alpha)
-
-    cdf_raw = (_Phi(z) - _Phi(alpha)) / Z
-    # clamp to [0,1] outside support
-    return torch.where(
-        x < a, torch.zeros_like(cdf_raw),
-        torch.where(x > b, torch.ones_like(cdf_raw), cdf_raw),
-    )
-
-
 def gen_theta_star(
     d: int = 30,
 ) -> float:
@@ -218,7 +164,8 @@ def gen_theta_star(
         float: theta star
     """
     u = uniform_direction.rvs(dim=d, size=1)
-    assert np.allclose(np.linalg.norm(u, axis=1), 1.0)
+    u = u.reshape((d, 1)) # reshape to column vector
+    assert np.allclose(np.linalg.norm(u, axis=0), 1.0)
     return u
 
 
@@ -252,7 +199,7 @@ def gen_deltas(
 def gen_theta_stars(
     theta_star: np.ndarray,
     deltas: np.ndarray,
-) -> np.ndarray:
+) -> List[np.ndarray]:
     """
     Generate theta star js for the time series data.
     Args:
@@ -263,63 +210,63 @@ def gen_theta_stars(
     """
     theta_stars = []
     for delta in deltas:
-        theta_stars.append(theta_star + delta)
-    return np.array(theta_stars)
+        theta_stars.append(theta_star + delta.reshape(-1, 1))
+    return theta_stars
 
 
 def gen_x_ts(
     M: int = 50, # Number of securities (2, 10, 50 in paper plots)
     d: int = 30, # Dimension of the context (30 in paper plots)
-) -> np.ndarray:
+) -> List[np.ndarray]:
     """
     Generate x_t for the synthetic data.
     Args:
         M (int): Number of securities. Default is 50.
         d (int): Dimension of the context. Default is 30.
     Returns:
-        np.ndarray: x_t for the synthetic data (simple mv normal).
+        List[np.ndarray]: x_ts for the synthetic data.
     """
     x_ts = []
     for i in range(M):
-        x_t = np.random.normal(0, 1, d)
+        x_t = np.random.normal(0, 1, (d, 1))
         x_ts.append(x_t)
-    return np.array(x_ts)
+    return x_ts
 
 
 def gen_n_remaining_payments(
     M: int = 50, # Number of securities (2, 10, 50 in paper plots)
-) -> np.ndarray:
+) -> List[List[float]]:
     """
-    # TODO: discuss whether boundaries are inclusive or exclusive
     Generate n_remaining_payments for the synthetic data.
     Args:
         M (int): Number of securities. Default is 50.
     Returns:
-        np.ndarray: n_remaining_payments for the synthetic data. Uniform 10, 50
+        List[List[float]]: n_remaining_payments for the synthetic data.
     """
     n_remaining_payments = []
     for i in range(M):
         n_remaining_payment = np.random.randint(10, 50)
+        n_remaining_payment = list(np.linspace(start=0.5, stop=n_remaining_payment * 0.5, num=n_remaining_payment, endpoint=True))
         n_remaining_payments.append(n_remaining_payment)
-    return np.array(n_remaining_payments)
+    return n_remaining_payments
 
 
 def gen_coupon_rates(
     M: int = 50, # Number of securities (2, 10, 50 in paper plots)
-) -> np.ndarray:
+) -> List[float]:
     """
     # TODO: discuss whether boundaries are inclusive or exclusive
     Generate coupon rates for the synthetic data.
     Args:
         M (int): Number of securities. Default is 50.
     Returns:
-        np.ndarray: coupon rates for the synthetic data, uniformly distributed.
+        List[float]: coupon rates for the synthetic data, uniformly distributed.
     """
     coupon_rates = []
     for i in range(M):
         coupon_rate = np.random.uniform(0.02, 0.1)
         coupon_rates.append(coupon_rate)
-    return np.array(coupon_rates)
+    return coupon_rates
 
 
 def gen_arrivals(
