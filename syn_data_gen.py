@@ -4,10 +4,13 @@ import math
 import random
 from scipy.stats import uniform_direction, truncnorm
 from typing import List, Union
+import os 
 
-# set seed for reproducibility
-random.seed(42)
-np.random.seed(42)
+SEED = 0
+# random seeed
+np.random.seed(SEED)  # For reproducibility
+random.seed(SEED)  # For reproducibility
+os.environ["PYTHONHASHSEED"] = str(SEED) 
 
 
 def sample_w_sphere(d: int, W: float, n_samples: int = 1,
@@ -172,7 +175,7 @@ def gen_theta_star(
 def gen_deltas(
     M: int = 50, # Number of securities (2, 10, 50 in paper plots)
     d: int = 30, # Dimension of the context (30 in paper plots)
-    delta_max: float = 2.0, # Maximum delta (0.1, 0.5, 2.0 in paper plots)
+    delta_max: float = 0.5, # Maximum delta (0.1, 0.5, 2.0 in paper plots)
 ) -> np.ndarray:
     """
     Generate deltas for the time series data.

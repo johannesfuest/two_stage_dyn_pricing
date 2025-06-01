@@ -1,9 +1,9 @@
 mode: uniform # unniform, poly or exp, depending on the arrival dist
-k: 5 # number of episode (starting from 2)
-W: 2 # ball norm of projection (unclear from paper)
-delta_max: 2.0 # max delta
+k: 12 # number of episode (starting from 2)
+W: 1.0 # ball norm of projection (unclear from paper)
+delta_max: 0.1 # max delta
 alpha: 2.0 # alpha for the decay
 init_mode: sample # zero or sample for first theta guess (sampling from W ball)
 d: 30
-M: 2 # 2, 10, 50 in the paper
+M: 10 # 2, 10, 50 in the paper
 gamma: 0 # aggression parameter, 0 in paper

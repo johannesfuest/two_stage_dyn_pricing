@@ -1,8 +1,12 @@
 import numpy as np
 from omegaconf import DictConfig, OmegaConf
 import json
-from typing import List, Dict, Any, Union
+from typing import List, Dict, Any, Union, Tuple
 from scipy.optimize import minimize, minimize_scalar
+from scipy.stats import norm
+from matplotlib import pyplot as plt
+import os
+import random
 from syn_data_gen import (
     gen_theta_stars,
     gen_x_ts,
@@ -16,7 +20,13 @@ from syn_data_gen import (
     noise_cdf,
     sample_w_sphere,
 )
-from loglikelihood import ll_and_grad
+from loglikelihood import ll_and_grad, ll_reg_and_grad
+
+SEED = 0
+# random seeed
+np.random.seed(SEED)  # For reproducibility
+random.seed(SEED)  # For reproducibility
+os.environ["PYTHONHASHSEED"] = str(SEED) 
 
 
 def get_synthetic_data(
@@ -47,68 +57,6 @@ def get_synthetic_data(
         "noise": noise,
         "deltas": deltas,
     }
-    
-def ll_func(
-    y_t_us: float,
-    y_t_them: float,
-    x_t: np.ndarray,
-    theta: np.ndarray,
-) -> float:
-    """
-    Calculates the log-likelihood function a single observation.
-    
-    Args:
-        y_t_us (float): The yield we quote.
-        y_t_them (float): The best competitor's yield.
-        x_t (np.ndarray): The context vector for the security.
-        theta (np.ndarray): The parameter vector.
-        noise (float): The noise term.
-        j (int): The index of the security.
-        noise_pdf (function): The probability density function of the noise.
-        noise_cdf (function): The cumulative distribution function of the noise.
-    Returns:
-        float: The log-likelihood value.
-    """
-    we_won = y_t_us > y_t_them
-    if we_won:
-        # We won the auction
-        val = np.log(1 - np.clip(noise_cdf(y_t_them - (theta.T@x_t).item()), 0, 1-1e-15))
-        return val 
-    else:
-        # We lost the auction
-        return np.log(noise_pdf(y_t_us - (theta.T@x_t).item()))
-
-
-def ll_func_sum(
-    yts_us: np.ndarray,
-    yts_them: np.ndarray,
-    x_ts: np.ndarray,
-    theta: np.ndarray,
-) -> float:
-    """
-    Calculates the log-likelihood function for a batch of observations.
-    
-    Args:
-        yts_us (np.ndarray): The yields we quote.
-        yts_them (np.ndarray): The best competitor's yields.
-        x_ts (np.ndarray): The context vectors for the securities.
-        theta (np.ndarray): The parameter vector.
-    Returns:
-        float: The log-likelihood value.
-    """
-    ll = 0
-    for i in range(len(yts_us)):
-        step = ll_func(
-            yts_us[i],
-            yts_them[i],
-            x_ts[i],
-            theta,
-        )
-        if np.isnan(step) or np.isinf(step):  # Skip invalid log-likelihood values
-            raise ValueError("Invalid log-likelihood value encountered.")
-        ll += step
-    ll /= len(yts_us)
-    return ll
 
 
 def yield_to_price(
@@ -159,6 +107,40 @@ def project_l2_ball_numpy(x: Union[np.ndarray, list, tuple], W: float) -> np.nda
     if norm_x <= W or norm_x == 0.0:
         return x
     return (W / norm_x) * x
+
+
+def ll_func_vectorized(
+        y_us: np.ndarray,
+        y_them: np.ndarray,
+        X: np.ndarray,
+        theta: np.ndarray,
+        noise_mu: float = 0.05,
+        noise_sigma: float = 0.05,
+        noise_support: Tuple[float, float] = (0.02, 0.11),
+        eps: float = 1e-9,
+) -> float:
+    """Log-likelihood under truncated normal noise model."""
+    # Calculate predicted means
+    mu = X @ theta
+
+    # Standardize values
+    a_std, b_std = [(x - noise_mu) / noise_sigma for x in noise_support]
+    z_std = (y_us - mu - noise_mu) / noise_sigma
+
+    # Compute probabilities
+    pdf_vals = norm.pdf(z_std)
+    cdf_vals = norm.cdf(z_std)
+    Z = norm.cdf(b_std) - norm.cdf(a_std)  # truncation normalizer
+
+    # Likelihood terms
+    we_won = y_us >= y_them
+    ll_values = np.where(
+        we_won,
+        np.log(pdf_vals + eps) - np.log(Z + eps),  # Density term when we observe yield
+        np.log(1.0 - cdf_vals + eps) - np.log(Z + eps)  # Survival term when censored
+    )
+
+    return ll_values.mean()
 
 
 def gen_optimal_quote(
@@ -215,7 +197,8 @@ def gen_optimal_quote(
             future_payment_dates=future_payment_dates,
             gamma=gamma,
         ),
-        bounds=[-0.999, y_bar],
+        bounds=[-y_bar, y_bar],
+        method='bounded',
     )
     optimal_yield = optimal_yield.x.item()
     return optimal_yield
@@ -327,7 +310,7 @@ def run_tsmt_algo_synth(
         P_t=1,
         coupon_rate=data_dict["coupon_rates"][prev_arrivals[0]],
         future_payment_dates=data_dict["remaining_payments"][prev_arrivals[0]],
-        y_bar=1,
+        y_bar=2,
         gamma=cfg.gamma,
     )]
 
@@ -341,11 +324,11 @@ def run_tsmt_algo_synth(
             P_t=1,
             coupon_rate=data_dict["coupon_rates"][prev_arrivals[0]],
             future_payment_dates=data_dict["remaining_payments"][prev_arrivals[0]],
-            y_bar=1,
+            y_bar=2,
             gamma=cfg.gamma,
         )
     ]
-    results["data_dict"] = data_dict
+    # results["data_dict"] = data_dict
     reg = regret(
         prev_optimal_quotes[0],
         prev_quotes_us[0],
@@ -356,14 +339,14 @@ def run_tsmt_algo_synth(
         future_payment_dates=data_dict["remaining_payments"][prev_arrivals[0]],
     )
     results["1"] = {
-        "theta_est": theta_est,
-        "theta_bar_est": prev_theta_bar,
+        # "theta_est": theta_est,
+        # "theta_bar_est": prev_theta_bar,
         "quotes_us": prev_quotes_us,
         "quotes_them": prev_quotes_them,
         "optimal_yields": prev_optimal_quotes,
         "noises": prev_noises,
         "arrivals": prev_arrivals,
-        "regret": reg,
+        "regret": [float(reg)],
     }
     start = 1
     for episode in range(2, cfg.k):
@@ -373,52 +356,52 @@ def run_tsmt_algo_synth(
             x_ts.append(data_dict["x_ts"][arrival])
         
         # theta_bar_est_res = minimize(
-        #     lambda theta: -ll_func_sum(
-        #         prev_quotes_us,
-        #         prev_quotes_them,
-        #         x_ts,
-        #         theta.reshape(-1, 1),
-        #     ),
-        #     prev_theta_bar.reshape(cfg.d,),
+        #     fun=ll_and_grad,
+        #     x0=data_dict["theta_star"].reshape(cfg.d,),
+        #     args=(prev_quotes_us, prev_quotes_them, x_ts),
+        #     jac=True,
+        #     method='trust-constr',
+        #     options=dict(maxiter=1000, gtol=1e-6),
         # )
         theta_bar_est_res = minimize(
-            fun=ll_and_grad,
-            x0=prev_theta_bar.reshape(cfg.d,),
-            args=(prev_quotes_us, prev_quotes_them, x_ts),
-            jac=True,
-            method='L-BFGS-B',
-            options=dict(maxiter=1000, gtol=1e-6),
+            lambda theta: -ll_func_vectorized(
+                np.array(prev_quotes_us),
+                np.array(prev_quotes_them),
+                np.array(x_ts).reshape(-1, cfg.d),
+                theta.reshape(-1, 1),
+            ),
+            x0=data_dict["theta_star"].reshape(cfg.d,),
         )
-        
         theta_bar_est = theta_bar_est_res.x.reshape(-1, 1)
         theta_est_new = [theta_bar_est for _ in range(cfg.M)]
+        
         # Stage 2: MLE for each security individually
         for security in range(cfg.M):
             n_security = sum([1 for arrival in prev_arrivals if arrival == security])
-            if n_security == 0:
-                # if no arrivals, skip this security and use theta bar
+            if n_security == 0: # if no arrivals, skip this security and use theta bar
                 continue
             x_ts = [data_dict["x_ts"][security] for _ in range(n_security)]
             y_ts_us = [y for i, y in enumerate(prev_quotes_us) if prev_arrivals[i] == security]
             yts_them = [y for i, y in enumerate(prev_quotes_them) if prev_arrivals[i] == security]
             lambda_j_k = 0.1 * np.sqrt((cfg.d / n_security))
-            # theta_j_est = minimize(
-            #     lambda theta: -ll_func_sum(
-            #         y_ts_us,
-            #         yts_them,
-            #         x_ts,
-            #         theta.reshape(-1, 1),
-            #     ) + lambda_j_k * np.linalg.norm(theta - theta_bar_est), # regularization term is different for synthetic data (see page 20)
-            #     theta_est[security].reshape(cfg.d,),
-            # ).x
+ 
+            # theta_j_est_res = minimize(
+            #     fun=ll_reg_and_grad,
+            #     x0=data_dict["theta_stars"][security].reshape(cfg.d,),
+            #     args=(y_ts_us, yts_them, x_ts, lambda_j_k, theta_bar_est),
+            #     jac=True,
+            #     method='trust-constr',
+            #     options=dict(maxiter=1000, gtol=1e-6),
+            # )
             theta_j_est_res = minimize(
-                fun=ll_and_grad,
-                x0=theta_est[security].reshape(cfg.d,),
-                args=(y_ts_us, yts_them, x_ts),
-                jac=True,
-                method='L-BFGS-B',
-                options=dict(maxiter=1000, gtol=1e-6),
-            ) # TODO: add regularization term
+                lambda theta: -ll_func_vectorized(
+                    np.array(y_ts_us),
+                    np.array(yts_them),
+                    np.array(x_ts).reshape(-1, cfg.d),
+                    theta.reshape(-1, 1),
+                ) + lambda_j_k * np.linalg.norm(theta - theta_bar_est, ord=2),
+                x0=data_dict["theta_stars"][security].reshape(cfg.d,),
+            )
             theta_est_new[security] = theta_j_est_res.x.reshape(-1, 1)
         episode_size = 2**(episode-1)
         episode_arrivals = data_dict["arrivals"][episode-1]
@@ -471,8 +454,8 @@ def run_tsmt_algo_synth(
             )
         start += episode_size
         results[str(episode)] = {
-            "theta_est": theta_est_new,
-            "theta_bar_est": theta_bar_est,
+            # "theta_est": theta_est_new,
+            # "theta_bar_est": theta_bar_est,
             "quotes_us": prev_quotes_us,
             "quotes_them": prev_quotes_them,
             "optimal_yields": prev_optimal_yields,
@@ -480,6 +463,24 @@ def run_tsmt_algo_synth(
             "arrivals": episode_arrivals,
             "regret": regs,
         }
+        
+    # Make a plot of the regret over time
+    cumulative_regret = []
+    start = 0
+    for i in range(1, cfg.k):
+        regrets = results[str(i)]["regret"]
+        for reg in regrets:
+            start += reg
+            cumulative_regret.append(start)
+    
+    plt.figure(figsize=(10, 6))
+    plt.plot(cumulative_regret, marker='o', linestyle='-', color='b')
+    plt.title('Cumulative Regret Over Time')
+    plt.xlabel('Time Step')
+    plt.ylabel('Cumulative Regret')
+    plt.grid()
+    plt.savefig("cumulative_regret_plot.png")
+    plt.close()
     return results
 
 
