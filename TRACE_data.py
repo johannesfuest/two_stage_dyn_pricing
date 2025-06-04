@@ -1,131 +1,236 @@
 import pandas as pd
 
-# Load the dataset
-trace = pd.read_csv('data/trace_enhanced.csv')  # Load the uploaded CSV file
+def load_and_preprocess_data(filepath):
+    """
+    Load and preprocess the TRACE dataset.
 
-# Define input and output dataset names
-in_dataset = 'traceIN'
-out_dataset = 'traceCLEAN'
+    Args:
+        filepath (str): Path to the CSV file
 
-# Step 1: Filtering Data Reported After Feb 6th, 2012
-temp_raw = trace[trace['trd_rpt_dt'] >= '2012-02-06'].copy()
-temp_raw = temp_raw[temp_raw['cusip_id'] != '']
+    Returns:
+        pd.DataFrame: Preprocessed DataFrame
+    """
+    # Load the dataset
+    trace = pd.read_csv(filepath)
 
-# Filter for sell transactions and Dealer
-temp_raw = temp_raw[temp_raw['rpt_side_cd'] == 'S']
+    # Filter out records with empty CUSIP
+    trace = trace[trace['cusip_id'] != '']
 
+    # Filter for sell transactions only
+    trace = trace[trace['rpt_side_cd'] == 'S']
 
-# Split data based on conditions
-temp_deletei_new = temp_raw[temp_raw['trc_st'].isin(['x', 'c'])][['cusip_id', 'entrd_vol_qt', 'rptd_pr', 'trd_exctn_dt', 'trd_exctn_tm', 'rpt_side_cd', 'cntra_mp_id', 'msg_seq_nb']]
-temp_deleteii_new = temp_raw[temp_raw['trc_st'].isin(['y'])][['cusip_id', 'entrd_vol_qt', 'rptd_pr', 'trd_exctn_dt', 'trd_exctn_tm', 'rpt_side_cd', 'cntra_mp_id', 'orig_msg_seq_nb']]
-temp_raw = temp_raw[~temp_raw['trc_st'].isin(['x', 'c', 'y'])]
-
-# Deletes the cancellations and corrections as identified by the reports in temp_deletei_new
-temp_raw2 = pd.merge(temp_raw, temp_raw[~temp_raw.index.isin(temp_deletei_new.index)], how='inner')
-
-# Deletes the reports that are matched by the reversals
-temp_raw3_new = pd.merge(temp_raw2, temp_raw2[~temp_raw2.index.isin(temp_deleteii_new.index)], how='inner')
-
-# Step 2: Filtering Data Reported Before Feb 6th, 2012
-temp_raw_pre = trace[trace['trd_rpt_dt'] < '2012-02-06'].copy()
-temp_raw_pre = temp_raw_pre[temp_raw_pre['cusip_id'] != '']
-
-# Filter for sell transactions
-temp_raw_pre = temp_raw_pre[temp_raw_pre['rpt_side_cd'] == 's']
-
-# Split data based on conditions
-temp_delete_pre = temp_raw_pre[temp_raw_pre['trc_st'] == 'c'][['trd_rpt_dt', 'orig_msg_seq_nb']]
-temp_raw_pre = temp_raw_pre[~temp_raw_pre['trc_st'].isin(['c', 'w'])]
-
-# Deletes the error trades as identified by the message sequence numbers
-temp_raw2_pre = pd.merge(temp_raw_pre, temp_raw_pre[~temp_raw_pre.index.isin(temp_delete_pre.index)], how='inner')
-
-# Take out reversals into a dataset
-reversal = temp_raw2_pre[temp_raw2_pre['asof_cd'] == 'r']
-temp_raw3_pre = temp_raw2_pre[temp_raw2_pre['asof_cd'] != 'r']
-
-# Sorting the data so that it can be merged
-reversal = reversal.sort_values(by=['trd_exctn_dt', 'cusip_id', 'trd_exctn_tm', 'rptd_pr', 'entrd_vol_qt', 'rpt_side_cd', 'cntra_mp_id', 'trd_rpt_dt', 'trd_rpt_tm', 'msg_seq_nb']).drop_duplicates()
-temp_raw3_pre = temp_raw3_pre.sort_values(by=['trd_exctn_dt', 'cusip_id', 'trd_exctn_tm', 'rptd_pr', 'entrd_vol_qt', 'rpt_side_cd', 'cntra_mp_id'])
-
-# Merges reversals back on and selects matching observations
-reversal2 = pd.merge(temp_raw3_pre, reversal, how='inner', on=['trd_exctn_dt', 'cusip_id', 'trd_exctn_tm', 'rptd_pr', 'entrd_vol_qt', 'rpt_side_cd', 'cntra_mp_id'])
-
-# Ensure that 'trd_rpt_dt' is a column in reversal2
-if 'trd_rpt_dt' in reversal2.columns:
-    reversal2 = reversal2[reversal2['trd_exctn_dt'] < reversal2['trd_rpt_dt']].drop_duplicates(subset=['trd_exctn_dt', 'bond_sym_id', 'trd_exctn_tm', 'rptd_pr', 'entrd_vol_qt'])
-else:
-    print("Column 'trd_rpt_dt' not found in reversal2")
-
-# Deletes the matching reversals
-temp_raw4_pre = temp_raw3_pre[~temp_raw3_pre.index.isin(reversal2.index)]
-
-# Step 3: Combining the PRE and POST Data
-temp_raw_comb = pd.concat([temp_raw4_pre, temp_raw3_new], ignore_index=True)
-
-# Drop columns that exist in the DataFrame
-columns_to_drop = ['n', 'asof_cd', 'trd_rpt_dt', 'trd_rpt_tm', 'msg_seq_nb', 'trc_st', 'orig_msg_seq_nb']
-existing_columns_to_drop = [col for col in columns_to_drop if col in temp_raw_comb.columns]
-temp_raw_comb = temp_raw_comb.drop(columns=existing_columns_to_drop)
-
-# Step 4: Agency Transaction Filtering
-temp_raw6 = temp_raw_comb.copy()
-temp_raw6['agency'] = temp_raw6.apply(lambda row: row['buy_cpcty_cd'] if row['rpt_side_cd'] == 'b' else row['sell_cpcty_cd'], axis=1)
-
-# Replace 'cmsn_trd' with the actual column name from your dataset
-if 'cmsn_trd' in temp_raw6.columns:
-    temp_raw6 = temp_raw6[~((temp_raw6['agency'] == 'a') & (temp_raw6['cntra_mp_id'] == 'c') & (temp_raw6['cmsn_trd'] == 'n'))]
-else:
-    print("Column 'cmsn_trd' not found in temp_raw6")
-
-# Deletes interdealer transactions (one of the sides)
-temp_raw6.loc[(temp_raw6['cntra_mp_id'] == 'd') & (temp_raw6['rpt_side_cd'] == 'b'), 'rpt_side_cd'] = 'd'
-temp_raw6 = temp_raw6[~((temp_raw6['cntra_mp_id'] == 'd') & (temp_raw6['rpt_side_cd'] == 's'))]
-
-# Compute the number of observations by cusip_id
-cusip_counts = temp_raw6['cusip_id'].value_counts()
+    return trace
 
 
-# Print the counts
-print(cusip_counts)
+def process_post_feb2012_data(df):
+    """
+    Process data reported after February 6th, 2012.
+
+    Args:
+        df (pd.DataFrame): Input DataFrame
+
+    Returns:
+        pd.DataFrame: Processed DataFrame
+    """
+    # Filter for post-Feb 2012 data
+    post_feb = df[df['trd_rpt_dt'] >= '2012-02-06'].copy()
+
+    # Split data based on TRC_ST values
+    delete_corrections = post_feb[post_feb['trc_st'].isin(['x', 'c'])][
+        ['cusip_id', 'entrd_vol_qt', 'rptd_pr', 'trd_exctn_dt',
+         'trd_exctn_tm', 'rpt_side_cd', 'cntra_mp_id', 'msg_seq_nb']
+    ]
+
+    delete_reversals = post_feb[post_feb['trc_st'].isin(['y'])][
+        ['cusip_id', 'entrd_vol_qt', 'rptd_pr', 'trd_exctn_dt',
+         'trd_exctn_tm', 'rpt_side_cd', 'cntra_mp_id', 'orig_msg_seq_nb']
+    ]
+
+    # Remove corrections and reversals from main dataset
+    clean_data = post_feb[~post_feb['trc_st'].isin(['x', 'c', 'y'])]
+
+    # Remove records that were cancelled or corrected
+    clean_data = clean_data[~clean_data.index.isin(delete_corrections.index)]
+
+    # Remove records that were reversed
+    clean_data = clean_data[~clean_data.index.isin(delete_reversals.index)]
+
+    return clean_data
 
 
-# Step 5: Save the Cleaned Dataset
-temp_raw6.to_csv('traceCLEAN.csv', index=False)
+def process_pre_feb2012_data(df):
+    """
+    Process data reported before February 6th, 2012.
 
-test = temp_raw6[temp_raw6['cusip_id'] == "458140BU3"]
-test = test[test['cntra_mp_id'] == "D"]
+    Args:
+        df (pd.DataFrame): Input DataFrame
+
+    Returns:
+        pd.DataFrame: Processed DataFrame
+    """
+    # Filter for pre-Feb 2012 data
+    pre_feb = df[df['trd_rpt_dt'] < '2012-02-06'].copy()
+
+    # Remove error trades (corrections and withdrawals)
+    error_trades = pre_feb[pre_feb['trc_st'] == 'c'][['trd_rpt_dt', 'orig_msg_seq_nb']]
+    clean_data = pre_feb[~pre_feb['trc_st'].isin(['c', 'w'])]
+    clean_data = clean_data[~clean_data.index.isin(error_trades.index)]
+
+    # Handle reversals
+    reversals = clean_data[clean_data['asof_cd'] == 'r']
+    clean_data = clean_data[clean_data['asof_cd'] != 'r']
+
+    # Sort data for proper merging
+    reversals = reversals.sort_values(
+        by=['trd_exctn_dt', 'cusip_id', 'trd_exctn_tm', 'rptd_pr',
+            'entrd_vol_qt', 'rpt_side_cd', 'cntra_mp_id',
+            'trd_rpt_dt', 'trd_rpt_tm', 'msg_seq_nb']
+    ).drop_duplicates()
+
+    clean_data = clean_data.sort_values(
+        by=['trd_exctn_dt', 'cusip_id', 'trd_exctn_tm', 'rptd_pr',
+            'entrd_vol_qt', 'rpt_side_cd', 'cntra_mp_id']
+    )
+
+    # Merge reversals back and remove matched trades
+    matched_reversals = pd.merge(
+        clean_data, reversals,
+        how='inner',
+        on=['trd_exctn_dt', 'cusip_id', 'trd_exctn_tm',
+            'rptd_pr', 'entrd_vol_qt', 'rpt_side_cd', 'cntra_mp_id']
+    )
+
+    if 'trd_rpt_dt' in matched_reversals.columns:
+        matched_reversals = matched_reversals[
+            matched_reversals['trd_exctn_dt'] < matched_reversals['trd_rpt_dt']
+            ].drop_duplicates(
+            subset=['trd_exctn_dt', 'bond_sym_id', 'trd_exctn_tm',
+                    'rptd_pr', 'entrd_vol_qt']
+        )
+
+    final_data = clean_data[~clean_data.index.isin(matched_reversals.index)]
+
+    return final_data
 
 
-df = temp_raw6
-# Ensure time is in the proper format
-# Convert time and date to proper formats
-df['trd_exctn_tm'] = pd.to_datetime(df['trd_exctn_tm'], format='%H:%M:%S').dt.time
-df['trd_exctn_dt'] = pd.to_datetime(df['trd_exctn_dt'])
+def filter_agency_transactions(df):
+    """
+    Filter agency transactions and clean interdealer trades.
 
-# Drop rows with missing volume, yield, or price
-df_clean = df.dropna(subset=['entrd_vol_qt', 'yld_pt', 'rptd_pr'])
+    Args:
+        df (pd.DataFrame): Input DataFrame
 
-# Convert relevant fields to numeric
-df_clean['entrd_vol_qt'] = pd.to_numeric(df_clean['entrd_vol_qt'])
-df_clean['yld_pt'] = pd.to_numeric(df_clean['yld_pt'])
-df_clean['rptd_pr'] = pd.to_numeric(df_clean['rptd_pr'])
+    Returns:
+        pd.DataFrame: Processed DataFrame
+    """
+    df = df.copy()
 
-# Group by cusip, date, and time, then aggregate
-aggregated = df_clean.groupby(['cusip_id', 'trd_exctn_dt', 'trd_exctn_tm']).apply(
-    lambda g: pd.Series({
-        'total_volume': g['entrd_vol_qt'].sum(),
-        'weighted_avg_yield': (g['yld_pt'] * g['entrd_vol_qt']).sum() / g['entrd_vol_qt'].sum(),
-        'weighted_avg_price': (g['rptd_pr'] * g['entrd_vol_qt']).sum() / g['entrd_vol_qt'].sum()
-    })
-).reset_index()
+    # Identify agency transactions
+    df['agency'] = df.apply(
+        lambda row: row['buy_cpcty_cd'] if row['rpt_side_cd'] == 'b'
+        else row['sell_cpcty_cd'],
+        axis=1
+    )
 
-# Optional: Save to CSV
-aggregated.to_csv("aggregated_RFQs.csv", index=False)
+    # Filter out specific agency transactions if column exists
+    if 'cmsn_trd' in df.columns:
+        df = df[~(
+                (df['agency'] == 'a') &
+                (df['cntra_mp_id'] == 'c') &
+                (df['cmsn_trd'] == 'n')
+        )]
 
-# Count number of RFQs (observations) per CUSIP
-cusip_counts = aggregated['cusip_id'].value_counts().reset_index()
-cusip_counts.columns = ['cusip_id', 'observation_count']
+    # Clean interdealer transactions
+    df.loc[(df['cntra_mp_id'] == 'd') & (df['rpt_side_cd'] == 'b'), 'rpt_side_cd'] = 'd'
+    df = df[~((df['cntra_mp_id'] == 'd') & (df['rpt_side_cd'] == 's'))]
 
-# Display result
-print(cusip_counts)
+    return df
+
+
+def aggregate_trades(df):
+    """
+    Aggregate trades by CUSIP, date, and time.
+
+    Args:
+        df (pd.DataFrame): Input DataFrame
+
+    Returns:
+        pd.DataFrame: Aggregated DataFrame with weighted averages
+    """
+    # Convert to proper datetime formats
+    df['trd_exctn_tm'] = pd.to_datetime(df['trd_exctn_tm'], format='%H:%M:%S').dt.time
+    df['trd_exctn_dt'] = pd.to_datetime(df['trd_exctn_dt'])
+
+    # Drop rows with missing values in key columns
+    df_clean = df.dropna(subset=['entrd_vol_qt', 'yld_pt', 'rptd_pr'])
+
+    # Convert to numeric
+    numeric_cols = ['entrd_vol_qt', 'yld_pt', 'rptd_pr']
+    df_clean[numeric_cols] = df_clean[numeric_cols].apply(pd.to_numeric)
+
+    # Group by CUSIP, date, and time to calculate weighted averages
+    aggregated = df_clean.groupby(['cusip_id', 'trd_exctn_dt', 'trd_exctn_tm']).apply(
+        lambda g: pd.Series({
+            'total_volume': g['entrd_vol_qt'].sum(),
+            'weighted_avg_yield': (g['yld_pt'] * g['entrd_vol_qt']).sum() / g['entrd_vol_qt'].sum(),
+            'weighted_avg_price': (g['rptd_pr'] * g['entrd_vol_qt']).sum() / g['entrd_vol_qt'].sum()
+        })
+    ).reset_index()
+
+    return aggregated
+
+
+def main():
+    # Configuration
+    INPUT_FILE = 'data/trace_enhanced.csv'
+    OUTPUT_FILE = 'traceCLEAN.csv'
+    AGGREGATED_OUTPUT = 'aggregated_RFQs.csv'
+
+    # Load and preprocess data
+    print("Loading and preprocessing data...")
+    trace = load_and_preprocess_data(INPUT_FILE)
+
+    # Process data before and after Feb 2012
+    print("Processing pre-Feb 2012 data...")
+    pre_feb_data = process_pre_feb2012_data(trace)
+
+    print("Processing post-Feb 2012 data...")
+    post_feb_data = process_post_feb2012_data(trace)
+
+    # Combine datasets
+    print("Combining datasets...")
+    combined_data = pd.concat([pre_feb_data, post_feb_data], ignore_index=True)
+
+    # Clean up columns
+    columns_to_drop = ['n', 'asof_cd', 'trd_rpt_dt', 'trd_rpt_tm',
+                       'msg_seq_nb', 'trc_st', 'orig_msg_seq_nb']
+    existing_columns = [col for col in columns_to_drop if col in combined_data.columns]
+    combined_data = combined_data.drop(columns=existing_columns)
+
+    # Filter agency transactions
+    print("Filtering agency transactions...")
+    final_data = filter_agency_transactions(combined_data)
+
+    # Save cleaned data
+    print("Saving cleaned data...")
+    final_data.to_csv(OUTPUT_FILE, index=False)
+
+    # Print CUSIP counts
+    cusip_counts = final_data['cusip_id'].value_counts()
+    print("\nCUSIP counts in cleaned data:")
+    print(cusip_counts)
+
+    # Aggregate trades
+    print("\nAggregating trades...")
+    aggregated = aggregate_trades(final_data)
+    aggregated.to_csv(AGGREGATED_OUTPUT, index=False)
+
+    # Print aggregated CUSIP counts
+    agg_counts = aggregated['cusip_id'].value_counts().reset_index()
+    agg_counts.columns = ['cusip_id', 'observation_count']
+    print("\nAggregated observation counts by CUSIP:")
+    print(agg_counts)
+
+
+if __name__ == '__main__':
+    main()

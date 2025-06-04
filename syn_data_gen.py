@@ -7,8 +7,8 @@ from scipy.stats import uniform_direction, truncnorm
 from typing import List, Union
 
 # set seed for reproducibility
-random.seed(42)
-np.random.seed(42)
+#random.seed(42)
+#np.random.seed(42)
 
 _TensorLike = Union[float, torch.Tensor]
 _SQRT2   = math.sqrt(2.0)
@@ -21,6 +21,7 @@ def gen_noise(
     sigma_noise: float = 0.05,
     a_noise: float = 0.02,
     b_noise: float = 0.11,
+    seed: int = None,
 ) -> np.ndarray:
     """
     Generate truncated-normal noise for the synthetic time-series data.
@@ -60,7 +61,7 @@ def gen_noise(
         loc=mu_noise,
         scale=sigma_noise,
         size=total_samples,
-        random_state=None,  # add a seed here if you need reproducibility
+        random_state=seed,  # add a seed here if you need reproducibility
     )
     return noise
 
@@ -208,23 +209,27 @@ def noise_cdf_torch(
 
 def gen_theta_star(
     d: int = 30,
-) -> float:
+    seed: int = None,
+) -> np.ndarray:
     """
     Generate theta star for the time series data (sampled from the unit sphere).
     Args:
         d (int): Dimension of the context. Default is 30.
+        seed (int, optional): Random seed for reproducibility.
     Returns:
-        float: theta star
+        np.ndarray: theta star
     """
-    u = np.random.randn(d)
+    rng = np.random.default_rng(seed)
+    u = rng.standard_normal(d)
     u /= np.linalg.norm(u)
     return u
 
 
 def gen_deltas(
-    M: int = 50, # Number of securities (2, 10, 50 in paper plots)
-    d: int = 30, # Dimension of the context (30 in paper plots)
-    delta_max: float = 2.0, # Maximum delta (0.1, 0.5, 2.0 in paper plots)
+    M: int = 50,
+    d: int = 30,
+    delta_max: float = 2.0,
+    seed: int = None,
 ) -> np.ndarray:
     """
     Generate deltas for the time series data.
@@ -232,11 +237,13 @@ def gen_deltas(
         M (int): Number of securities. Default is 50.
         d (int): Dimension of the context. Default is 30.
         delta_max (float): Maximum delta. Default is 2.0.
+        seed (int, optional): Random seed for reproducibility.
     Returns:
         np.ndarray: delta_js for the synthetic data.
     """
-    covariance_matrix = covariance_matrix = 0.2 * np.eye(d) + np.ones((d, d))
-    samples = np.random.multivariate_normal(
+    rng = np.random.default_rng(seed)
+    covariance_matrix = 0.2 * np.eye(d) + np.ones((d, d))
+    samples = rng.multivariate_normal(
         mean=np.zeros(d),
         cov=covariance_matrix,
         size=M
@@ -269,27 +276,40 @@ def gen_theta_stars(
 def gen_x_ts(
     n_rounds: int,
     d: int = 30,
+    seed: int = None,
+    x_max_vector: Union[float, np.ndarray] = 1.0,
 ) -> np.ndarray:
     """
-    Generate x_t context vectors for each round t, sampled i.i.d. from N(0, I_d).
+    Generate x_t context vectors for each round t, sampled i.i.d. from N(0, I_d),
+    then scaled to have specified L2 norms.
 
     Parameters
     ----------
     n_rounds : int
-        Total number of time steps (T).
+        Number of time steps.
     d : int
-        Dimension of the context vectors.
+        Context dimension.
+    seed : int
+        Random seed.
+    x_max_vector : float or np.ndarray
+        Scalar or array of shape (n_rounds,) giving per-x_t L2 norms.
 
     Returns
     -------
     np.ndarray
-        Array of shape (n_rounds, d) with i.i.d. standard normal vectors.
+        Shape (n_rounds, d), each row scaled to norm x_max_vector[i].
     """
-    x_t = np.random.normal(0, 1, size=(n_rounds, d))
-    x_t /= np.linalg.norm(x_t, axis=1, keepdims=True)
+    rng = np.random.default_rng(seed)
+    x_t = rng.normal(0, 1, size=(n_rounds, d))
+    x_t = x_t / np.linalg.norm(x_t, axis=1, keepdims=True)  # Normalize to unit norm
+
     return x_t
 
-def gen_n_remaining_payments(M: int = 50) -> np.ndarray:
+
+def gen_n_remaining_payments(
+    M: int = 50,
+    seed: int = None,
+) -> np.ndarray:
     """
     Generate the number of remaining payments per security, sampled uniformly from [10, 50] (inclusive).
 
@@ -297,38 +317,42 @@ def gen_n_remaining_payments(M: int = 50) -> np.ndarray:
     ----------
     M : int
         Number of securities.
+    seed : int, optional
+        Random seed for reproducibility.
 
     Returns
     -------
     np.ndarray
         Array of integers of shape (M,), each in [10, 50].
     """
-    return np.random.randint(10, 51, size=M)
-
+    rng = np.random.default_rng(seed)
+    return rng.integers(10, 51, size=M)
 
 def gen_coupon_rates(
-    M: int = 50, # Number of securities (2, 10, 50 in paper plots)
+    M: int = 50,
+    seed: int = None,
 ) -> np.ndarray:
     """
-    # TODO: discuss whether boundaries are inclusive or exclusive
-    Generate coupon rates for the synthetic data.
+    Generate coupon rates for the synthetic data, uniformly distributed in [0.02, 0.1].
+
     Args:
         M (int): Number of securities. Default is 50.
+        seed (int, optional): Random seed for reproducibility.
+
     Returns:
-        np.ndarray: coupon rates for the synthetic data, uniformly distributed.
+        np.ndarray: Coupon rates for the synthetic data.
     """
-    coupon_rates = []
-    for i in range(M):
-        coupon_rate = np.random.uniform(0.02, 0.1)
-        coupon_rates.append(coupon_rate)
-    return np.array(coupon_rates)
+    rng = np.random.default_rng(seed)
+    return rng.uniform(0.02, 0.1, size=M)
+
 
 
 def gen_arrivals(
     M: int = 50,
     mode: str = "uniform",     # "uniform", "poly", or "exp"
     alpha: float = 2.0,        # decay rate (0, 1, 2, 3 in paper plots)
-    n_episodes: int = 10       # highest round index k (starts at 1)
+    n_episodes: int = 10,       # highest round index k (starts at 1)
+    seed: int = None,
 ) -> List[List[int]]:
     """
     # TODO: what exactly is quadratic decay?
@@ -356,7 +380,7 @@ def gen_arrivals(
         p = weights / weights.sum()
     else:
         raise ValueError("mode must be 'uniform', 'poly', or 'exp'")
-    rng = np.random.default_rng()
+    rng = np.random.default_rng(seed)
     arrivals: List[List[int]] = []
 
     for k in range(1, n_episodes + 1):

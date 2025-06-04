@@ -1,0 +1,10 @@
+mode: "uniform" # synthetic, real
+k: 12 # number of episode (starting from 2)
+W: 3 # ball norm of projection (unclear from paper)
+delta_max: 2 # max delta
+alpha: 0 # alpha for the decay
+theta_init: sample # zero or sample
+d: 30 # d
+M: 2 # M
+init_mode: "sample"
+seed: 2
